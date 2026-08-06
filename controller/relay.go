@@ -57,6 +57,27 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	return err
 }
 
+func usesResponsesTokenBilling(relayFormat types.RelayFormat, channelType int) bool {
+	return relayFormat == types.RelayFormatCodexSearch && channelType == constant.ChannelTypeOpenAI
+}
+
+func prepareResponsesSearchAttemptBilling(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) *types.NewAPIError {
+	priceData, err := helper.ModelPriceHelper(c, info, promptTokens, meta)
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
+	}
+	if priceData.FreeModel {
+		return nil
+	}
+	if info.Billing == nil {
+		return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, info)
+	}
+	if err := info.Billing.Reserve(priceData.QuotaToPreConsume); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
+	return nil
+}
+
 func prepareCodexSearchAttemptBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	priceData, err := helper.CodexSearchPriceHelper(c, info)
 	if err != nil {
@@ -159,15 +180,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
-	if relayFormat == types.RelayFormatCodexSearch && c.GetInt("channel_type") != constant.ChannelTypeCodex {
+	if relayFormat == types.RelayFormatCodexSearch &&
+		c.GetInt("channel_type") != constant.ChannelTypeCodex &&
+		c.GetInt("channel_type") != constant.ChannelTypeOpenAI {
 		newAPIError = types.NewErrorWithStatusCode(
-			errors.New("standalone search is only supported by Codex channels"),
+			errors.New("standalone search is only supported by Codex or OpenAI channels"),
 			types.ErrorCodeInvalidRequest,
 			http.StatusBadRequest,
 			types.ErrOptionWithSkipRetry(),
 		)
 		return
 	}
+	responsesTokenBilledSearch := usesResponsesTokenBilling(relayFormat, c.GetInt("channel_type"))
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -197,7 +221,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.SetEstimatePromptTokens(tokens)
 
 	var priceData types.PriceData
-	if relayFormat == types.RelayFormatCodexSearch {
+	if relayFormat == types.RelayFormatCodexSearch && !responsesTokenBilledSearch {
 		priceData, err = helper.CodexSearchPriceHelper(c, relayInfo)
 	} else {
 		priceData, err = helper.ModelPriceHelper(c, relayInfo, tokens, meta)
@@ -238,6 +262,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	searchBillingUsesResponses := responsesTokenBilledSearch
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
@@ -261,11 +286,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		attemptResponsesTokenBilledSearch := usesResponsesTokenBilling(relayFormat, channel.Type)
 		if relayFormat == types.RelayFormatCodexSearch {
-			newAPIError = prepareCodexSearchAttemptBilling(c, relayInfo)
+			if attemptResponsesTokenBilledSearch {
+				if !searchBillingUsesResponses {
+					newAPIError = prepareResponsesSearchAttemptBilling(c, relayInfo, tokens, meta)
+				}
+			} else {
+				newAPIError = prepareCodexSearchAttemptBilling(c, relayInfo)
+			}
 			if newAPIError != nil {
 				break
 			}
+			searchBillingUsesResponses = attemptResponsesTokenBilledSearch
 		}
 
 		switch relayFormat {
@@ -281,7 +314,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
-			if relayFormat == types.RelayFormatCodexSearch {
+			if relayFormat == types.RelayFormatCodexSearch && !attemptResponsesTokenBilledSearch {
 				settleCodexSearchBilling(c, relayInfo)
 				service.LogCodexSearchConsumption(c, relayInfo)
 			}

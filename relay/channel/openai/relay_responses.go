@@ -66,7 +66,24 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		buildToolinfo.CallCount++
 	}
+	for _, output := range responsesResponse.Output {
+		if output.Type == dto.BuildInCallWebSearchCall {
+			incrementWebSearchCallCount(info)
+		}
+	}
 	return &usage, nil
+}
+
+func incrementWebSearchCallCount(info *relaycommon.RelayInfo) {
+	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
+		return
+	}
+	for _, toolName := range []string{dto.BuildInToolWebSearch, dto.BuildInToolWebSearchPreview} {
+		if webSearchTool, exists := info.ResponsesUsageInfo.BuiltInTools[toolName]; exists && webSearchTool != nil {
+			webSearchTool.CallCount++
+			return
+		}
+	}
 }
 
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -122,11 +139,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			if streamResponse.Item != nil {
 				switch streamResponse.Item.Type {
 				case dto.BuildInCallWebSearchCall:
-					if info != nil && info.ResponsesUsageInfo != nil && info.ResponsesUsageInfo.BuiltInTools != nil {
-						if webSearchTool, exists := info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview]; exists && webSearchTool != nil {
-							webSearchTool.CallCount++
-						}
-					}
+					incrementWebSearchCallCount(info)
 				}
 			}
 		}

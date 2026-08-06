@@ -9,7 +9,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	appconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
-	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -86,8 +85,20 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
 		}
+		if common.DebugEnabled {
+			if originalBody, bodyErr := storage.Bytes(); bodyErr == nil {
+				relaycommon.LogRequestTrace(c, info, "incoming-pass-through", c.Request.Method, c.Request.URL.String(), c.Request.Host, c.Request.Header, originalBody)
+			}
+		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
+		if common.DebugEnabled {
+			if storage, bodyErr := common.GetBodyStorage(c); bodyErr == nil {
+				if originalBody, readErr := storage.Bytes(); readErr == nil {
+					relaycommon.LogRequestTrace(c, info, "incoming", c.Request.Method, c.Request.URL.String(), c.Request.Host, c.Request.Header, originalBody)
+				}
+			}
+		}
 		convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *request)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -112,7 +123,14 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 			}
 		}
 
-		logger.LogDebug(c, "requestBody: %s", jsonData)
+		relaycommon.LogRequestTrace(c, info, "responses-outbound-body", c.Request.Method, "/v1/responses", c.Request.Host, c.Request.Header, jsonData)
+		if common.DebugEnabled {
+			if originalBody, bodyErr := common.GetBodyStorage(c); bodyErr == nil {
+				if originalBytes, readErr := originalBody.Bytes(); readErr == nil {
+					relaycommon.LogJSONRequestDiff(c, "responses-incoming-to-outbound", originalBytes, jsonData)
+				}
+			}
+		}
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())

@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -310,6 +311,16 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
+	var traceBody []byte
+	if common2.DebugEnabled && info != nil &&
+		(info.RelayMode == constant.RelayModeCodexSearch || info.RelayMode == constant.RelayModeResponses) &&
+		info.UpstreamRequestBodySize > 0 && requestBody != nil {
+		traceBody, err = io.ReadAll(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("read request body for trace failed: %w", err)
+		}
+		requestBody = bytes.NewReader(traceBody)
+	}
 	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
@@ -327,6 +338,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	common.LogRequestTrace(c, info, "upstream-request", req.Method, req.URL.String(), req.Host, req.Header, traceBody)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)

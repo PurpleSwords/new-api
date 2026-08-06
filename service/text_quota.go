@@ -96,6 +96,14 @@ func calculateTextToolCallSurcharge(ctx *gin.Context, relayInfo *relaycommon.Rel
 				Div(decimal.NewFromInt(1000)).
 				Mul(dGroupRatio).
 				Mul(dQuotaPerUnit))
+		} else if webSearchTool, exists := relayInfo.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearch]; exists && webSearchTool.CallCount > 0 {
+			summary.WebSearchCallCount = webSearchTool.CallCount
+			summary.WebSearchPrice = operation_setting.GetToolPriceForModel("web_search", summary.ModelName)
+			surcharge = surcharge.Add(decimal.NewFromFloat(summary.WebSearchPrice).
+				Mul(decimal.NewFromInt(int64(webSearchTool.CallCount))).
+				Div(decimal.NewFromInt(1000)).
+				Mul(dGroupRatio).
+				Mul(dQuotaPerUnit))
 		}
 	} else if strings.HasSuffix(summary.ModelName, "search-preview") {
 		summary.WebSearchCallCount = 1

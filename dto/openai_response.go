@@ -398,6 +398,7 @@ type ResponsesReasoningSummaryPart struct {
 }
 
 const (
+	BuildInToolWebSearch        = "web_search"
 	BuildInToolWebSearchPreview = "web_search_preview"
 	BuildInToolFileSearch       = "file_search"
 )

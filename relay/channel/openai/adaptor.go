@@ -103,6 +103,16 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.RelayMode == relayconstant.RelayModeCodexSearch {
+		// OpenAI-compatible upstreams generally expose Responses, not the
+		// ChatGPT-only Codex alpha search endpoint. The search handler converts
+		// the request body before sending it, so reuse the normal Responses path.
+		if info.ChannelType == constant.ChannelTypeOpenAI {
+			return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/responses", info.ChannelType), nil
+		}
+		return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, constant.CodexSearchPath, info.ChannelType), nil
+	}
+
 	if info.RelayMode == relayconstant.RelayModeRealtime {
 		if strings.HasPrefix(info.ChannelBaseUrl, "https://") {
 			baseUrl := strings.TrimPrefix(info.ChannelBaseUrl, "https://")
@@ -610,7 +620,155 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if info != nil && request.Reasoning != nil && request.Reasoning.Effort != "" {
 		info.ReasoningEffort = request.Reasoning.Effort
 	}
+	if shouldInjectWebSearchTool(info, request) {
+		request.Tools = withWebSearchTool(request.Tools)
+		request.Input = withoutAdditionalTools(request.Input)
+		registerWebSearchTool(info)
+	}
 	return request, nil
+}
+
+func registerWebSearchTool(info *relaycommon.RelayInfo) {
+	if info == nil || info.ResponsesUsageInfo == nil {
+		return
+	}
+	if info.ResponsesUsageInfo.BuiltInTools == nil {
+		info.ResponsesUsageInfo.BuiltInTools = make(map[string]*relaycommon.BuildInToolInfo)
+	}
+	if _, exists := info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearch]; !exists {
+		info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearch] = &relaycommon.BuildInToolInfo{
+			ToolName: dto.BuildInToolWebSearch,
+		}
+	}
+}
+
+func shouldInjectWebSearchTool(info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) bool {
+	if info == nil || info.ChannelType != constant.ChannelTypeOpenAI {
+		return false
+	}
+	if hasWebSearchTool(request.Tools) {
+		return false
+	}
+	return hasAdditionalWebSearch(request.Input)
+}
+
+func hasWebSearchTool(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return false
+	}
+	for _, tool := range tools {
+		typeName, _ := tool["type"].(string)
+		if typeName == dto.BuildInToolWebSearch || typeName == dto.BuildInToolWebSearchPreview {
+			return true
+		}
+	}
+	return false
+}
+
+func withWebSearchTool(raw json.RawMessage) json.RawMessage {
+	var tools []map[string]any
+	if len(raw) > 0 && json.Unmarshal(raw, &tools) != nil {
+		return raw
+	}
+	tools = append(tools, map[string]any{
+		"type":                 dto.BuildInToolWebSearch,
+		"external_web_access":  true,
+		"search_content_types": []string{"text", "image"},
+	})
+	updated, err := json.Marshal(tools)
+	if err != nil {
+		return raw
+	}
+	return updated
+}
+
+func hasAdditionalWebSearch(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return findAdditionalWebSearch(value)
+}
+
+func withoutAdditionalTools(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return raw
+	}
+	stripAdditionalTools(value)
+	updated, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return updated
+}
+
+func stripAdditionalTools(value any) {
+	switch current := value.(type) {
+	case []any:
+		for _, item := range current {
+			stripAdditionalTools(item)
+		}
+	case map[string]any:
+		delete(current, "additional_tools")
+		for _, item := range current {
+			stripAdditionalTools(item)
+		}
+	}
+}
+
+func findAdditionalWebSearch(value any) bool {
+	switch current := value.(type) {
+	case []any:
+		for _, item := range current {
+			if findAdditionalWebSearch(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, item := range current {
+			if key == "additional_tools" && containsWebSearchSpec(item) {
+				return true
+			}
+			if findAdditionalWebSearch(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsWebSearchSpec(value any) bool {
+	switch current := value.(type) {
+	case string:
+		return strings.EqualFold(current, dto.BuildInToolWebSearch) || strings.EqualFold(current, dto.BuildInToolWebSearchPreview)
+	case []any:
+		for _, item := range current {
+			if containsWebSearchSpec(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, item := range current {
+			if (key == "type" || key == "name" || key == "tool") && containsWebSearchSpec(item) {
+				return true
+			}
+			if containsWebSearchSpec(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
