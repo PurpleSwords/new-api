@@ -156,6 +156,9 @@ func GetAndValidateAlphaSearchRequest(c *gin.Context) (*dto.AlphaSearchRequest, 
 	if request.Model == "" {
 		return nil, errors.New("model is required")
 	}
+	if exceedsMaxTokensLimit(request.MaxOutputTokens) {
+		return nil, errors.New("max_output_tokens is invalid")
+	}
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return nil, err

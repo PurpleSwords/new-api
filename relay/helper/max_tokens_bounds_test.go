@@ -69,4 +69,19 @@ func TestMaxTokensBounds(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "max_output_tokens is invalid")
 	})
+
+	t.Run("alpha search max_output_tokens overflow rejected", func(t *testing.T) {
+		c := newJSONContext(t, `{"model":"gpt-5.4","commands":{"search_query":[{"q":"news"}]},"max_output_tokens":`+hugeN+`}`)
+		_, err := GetAndValidateAlphaSearchRequest(c)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "max_output_tokens is invalid")
+	})
+
+	t.Run("alpha search normal max_output_tokens accepted", func(t *testing.T) {
+		c := newJSONContext(t, `{"model":"gpt-5.4","commands":{"search_query":[{"q":"news"}]},"max_output_tokens":4096}`)
+		request, err := GetAndValidateAlphaSearchRequest(c)
+		require.NoError(t, err)
+		require.NotNil(t, request.MaxOutputTokens)
+		require.EqualValues(t, 4096, *request.MaxOutputTokens)
+	})
 }

@@ -851,6 +851,61 @@ func TestCalculateTextToolCallSurchargeDoesNotInferSearchForResponses(t *testing
 	assert.Empty(t, summary.ToolSurchargeItems)
 }
 
+func TestCalculateTextToolCallSurchargeDoesNotInferSearchForAlphaSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeAlphaSearch,
+		OriginModelName: "gpt-4o-search-preview",
+		ResponsesUsageInfo: &relaycommon.ResponsesUsageInfo{
+			BuiltInTools: map[string]*relaycommon.BuildInToolInfo{
+				dto.BuildInToolWebSearchPreview: {CallCount: 0},
+			},
+		},
+	}
+	summary := &textQuotaSummary{
+		ModelName:  relayInfo.OriginModelName,
+		GroupRatio: 1,
+	}
+
+	surcharge := calculateTextToolCallSurcharge(ctx, relayInfo, summary)
+
+	assert.True(t, surcharge.IsZero())
+	assert.Empty(t, summary.ToolSurchargeItems)
+}
+
+func TestCalculateTextQuotaSummaryAlphaSearchBillsTokensWithoutToolSurcharge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeAlphaSearch,
+		OriginModelName: "gpt-4o-search-preview",
+		PriceData: hosttypes.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 2,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{
+				GroupRatio: 1,
+			},
+		},
+		ResponsesUsageInfo: &relaycommon.ResponsesUsageInfo{
+			BuiltInTools: map[string]*relaycommon.BuildInToolInfo{
+				dto.BuildInToolWebSearchPreview: {CallCount: 0},
+			},
+		},
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+	})
+
+	assert.Equal(t, 15, summary.TotalTokens)
+	assert.Equal(t, 20, summary.Quota)
+	assert.True(t, summary.ToolCallSurchargeQuota.IsZero())
+	assert.Empty(t, summary.ToolSurchargeItems)
+}
+
 func TestCalculateTextToolCallSurchargeMergesSameNameAndPrice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
