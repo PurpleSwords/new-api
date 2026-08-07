@@ -26,6 +26,7 @@ import type {
   CommonLogFilters,
   DrawingLogFilters,
   TaskLogFilters,
+  UsageLogsSearchParams,
 } from '../types'
 
 // ============================================================================
@@ -38,8 +39,8 @@ import type {
 export function buildSearchParams(
   filters: LogFilters,
   logCategory: LogCategory
-): Record<string, unknown> {
-  const baseParams: Record<string, unknown> = {
+): UsageLogsSearchParams {
+  const baseParams: UsageLogsSearchParams = {
     ...(filters.startTime && { startTime: filters.startTime.getTime() }),
     ...(filters.endTime && { endTime: filters.endTime.getTime() }),
     ...(filters.channel && { channel: filters.channel }),

@@ -30,6 +30,21 @@ import type { UsageLog } from './data/schema'
  */
 export type LogCategory = 'common' | 'drawing' | 'task'
 
+export type UsageLogsSearchParams = {
+  [key: string]: unknown
+  type?: string[]
+  filter?: string
+  model?: string
+  token?: string
+  channel?: string
+  group?: string
+  username?: string
+  requestId?: string
+  upstreamRequestId?: string
+  startTime?: number
+  endTime?: number
+}
+
 // ============================================================================
 // Filter Types
 // ============================================================================
@@ -391,7 +406,7 @@ export interface FetchLogsConfig {
   isAdmin: boolean
   page: number
   pageSize: number
-  searchParams: Record<string, unknown>
+  searchParams: UsageLogsSearchParams
   columnFilters: Array<{ id: string; value: unknown }>
 }
 

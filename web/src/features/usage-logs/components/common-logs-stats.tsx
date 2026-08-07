@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
@@ -27,9 +26,8 @@ import { cn } from '@/lib/utils'
 import { getLogStats, getUserLogStats } from '../api'
 import { DEFAULT_LOG_STATS } from '../constants'
 import { buildApiParams } from '../lib/utils'
+import type { UsageLogsSearchParams } from '../types'
 import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
-
-const route = getRouteApi('/_authenticated/usage-logs/$section')
 
 function StatBadge(props: {
   label: string
@@ -47,10 +45,13 @@ function StatBadge(props: {
   )
 }
 
-export function CommonLogsStats() {
+export function CommonLogsStats({
+  searchParams = {},
+}: {
+  searchParams?: UsageLogsSearchParams
+}) {
   const { t } = useTranslation()
   const { isAdminView: isAdmin } = useLogsViewScope()
-  const searchParams = route.useSearch()
   const { sensitiveVisible } = useUsageLogsContext()
 
   const { data: stats, isLoading } = useQuery({

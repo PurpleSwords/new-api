@@ -31,7 +31,10 @@ const PAGE_SIZE_STORAGE_KEY = 'page-size'
 
 function getStoredPageSize(): number | undefined {
   try {
-    const n = parseInt(localStorage.getItem(PAGE_SIZE_STORAGE_KEY) ?? '', 10)
+    const n = Number.parseInt(
+      localStorage.getItem(PAGE_SIZE_STORAGE_KEY) ?? '',
+      10
+    )
     return n > 0 ? n : undefined // n > 0 also rejects NaN
   } catch {
     return undefined
@@ -57,6 +60,7 @@ export type NavigateFn = (opts: {
 type UseTableUrlStateParams = {
   search: SearchRecord
   navigate: NavigateFn
+  syncToUrl?: boolean
   pagination?: {
     pageKey?: string
     pageSizeKey?: string
@@ -110,6 +114,7 @@ export function useTableUrlState(
   const {
     search,
     navigate,
+    syncToUrl = true,
     pagination: paginationCfg,
     globalFilter: globalFilterCfg,
     columnFilters: columnFiltersCfg = [],
@@ -126,6 +131,8 @@ export function useTableUrlState(
 
   // Build initial column filters from the current search params
   const initialColumnFilters: ColumnFiltersState = useMemo(() => {
+    if (!syncToUrl) return []
+
     const collected: ColumnFiltersState = []
     for (const cfg of columnFiltersCfg) {
       const raw = (search as SearchRecord)[cfg.searchKey]
@@ -144,18 +151,18 @@ export function useTableUrlState(
       }
     }
     return collected
-  }, [columnFiltersCfg, search])
+  }, [columnFiltersCfg, search, syncToUrl])
 
   const [columnFilters, setColumnFilters] =
     useState<ColumnFiltersState>(initialColumnFilters)
 
   // URL 为单一数据源：仅当 search（URL）变化时同步，避免依赖 initialColumnFilters 造成死循环（config 常为内联引用）
   useEffect(() => {
-    setColumnFilters(initialColumnFilters)
+    if (syncToUrl) setColumnFilters(initialColumnFilters)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search])
+  }, [search, syncToUrl])
 
-  const pagination: PaginationState = useMemo(() => {
+  const urlPagination: PaginationState = useMemo(() => {
     const rawPage = (search as SearchRecord)[pageKey]
     const rawPageSize = (search as SearchRecord)[pageSizeKey]
     const pageNum = typeof rawPage === 'number' ? rawPage : defaultPage
@@ -165,12 +172,31 @@ export function useTableUrlState(
         : (getStoredPageSize() ?? defaultPageSize)
     return { pageIndex: Math.max(0, pageNum - 1), pageSize: pageSizeNum }
   }, [search, pageKey, pageSizeKey, defaultPage, defaultPageSize])
+  const [localPagination, setLocalPagination] = useState<PaginationState>(
+    () => ({
+      pageIndex: Math.max(0, defaultPage - 1),
+      pageSize: getStoredPageSize() ?? defaultPageSize,
+    })
+  )
+  useEffect(() => {
+    if (syncToUrl || getStoredPageSize() !== undefined) return
+    setLocalPagination((current) =>
+      current.pageSize === defaultPageSize
+        ? current
+        : { ...current, pageIndex: 0, pageSize: defaultPageSize }
+    )
+  }, [defaultPageSize, syncToUrl])
+  const pagination = syncToUrl ? urlPagination : localPagination
 
   const onPaginationChange: OnChangeFn<PaginationState> = (updater) => {
     const next = typeof updater === 'function' ? updater(pagination) : updater
     const nextPage = next.pageIndex + 1
     const nextPageSize = next.pageSize
     if (nextPageSize !== pagination.pageSize) setStoredPageSize(nextPageSize)
+    if (!syncToUrl) {
+      setLocalPagination(next)
+      return
+    }
     navigate({
       search: (prev) => ({
         ...(prev as SearchRecord),
@@ -182,6 +208,7 @@ export function useTableUrlState(
 
   const [globalFilter, setGlobalFilter] = useState<string | undefined>(() => {
     if (!globalFilterEnabled) return undefined
+    if (!syncToUrl) return ''
     const raw = (search as SearchRecord)[globalFilterKey]
     return typeof raw === 'string' ? raw : ''
   })
@@ -195,6 +222,7 @@ export function useTableUrlState(
               : updater
           const value = trimGlobal ? next.trim() : next
           setGlobalFilter(value)
+          if (!syncToUrl) return
           navigate({
             search: (prev) => ({
               ...(prev as SearchRecord),
@@ -209,6 +237,7 @@ export function useTableUrlState(
     const next =
       typeof updater === 'function' ? updater(columnFilters) : updater
     setColumnFilters(next)
+    if (!syncToUrl) return
 
     const patch: Record<string, unknown> = {}
 
@@ -221,9 +250,8 @@ export function useTableUrlState(
         patch[cfg.searchKey] =
           value.trim() !== '' ? serialize(value) : undefined
       } else {
-        const value = Array.isArray(found?.value)
-          ? (found!.value as unknown[])
-          : []
+        const foundValue = found?.value
+        const value = Array.isArray(foundValue) ? foundValue : []
         patch[cfg.searchKey] = value.length > 0 ? serialize(value) : undefined
       }
     }
@@ -241,9 +269,21 @@ export function useTableUrlState(
     pageCount: number,
     opts: { resetTo?: 'first' | 'last' } = { resetTo: 'first' }
   ) => {
-    const currentPage = (search as SearchRecord)[pageKey]
+    const currentPage = syncToUrl
+      ? (search as SearchRecord)[pageKey]
+      : pagination.pageIndex + 1
     const pageNum = typeof currentPage === 'number' ? currentPage : defaultPage
     if (pageCount > 0 && pageNum > pageCount) {
+      if (!syncToUrl) {
+        setLocalPagination((current) => ({
+          ...current,
+          pageIndex:
+            opts.resetTo === 'last'
+              ? Math.max(0, pageCount - 1)
+              : Math.max(0, defaultPage - 1),
+        }))
+        return
+      }
       navigate({
         replace: true,
         search: (prev) => ({

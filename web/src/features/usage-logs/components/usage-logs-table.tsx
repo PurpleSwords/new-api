@@ -17,8 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi } from '@tanstack/react-router'
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -38,14 +38,15 @@ import {
 } from '../constants'
 import { useColumnsByCategory } from '../lib/columns'
 import { parseLogOther } from '../lib/format'
-import { fetchLogsByCategory } from '../lib/utils'
-import type { LogCategory } from '../types'
+import { fetchLogsByCategory, getDefaultTimeRange } from '../lib/utils'
+import type { LogCategory, UsageLogsSearchParams } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
 import { TaskLogsFilterBar } from './task-logs-filter-bar'
 import { UsageLogsMobileList } from './usage-logs-mobile-card'
 import { useLogsViewScope } from './usage-logs-provider'
 
-const route = getRouteApi('/_authenticated/usage-logs/$section')
+const EMPTY_SEARCH_PARAMS: UsageLogsSearchParams = {}
+const ignoreTableNavigation = () => undefined
 
 const logTypeRowTint: Record<number, string> = {
   [LOG_TYPE_ENUM.ERROR]: 'bg-rose-50/40 dark:bg-rose-950/20',
@@ -64,7 +65,9 @@ function getColumnVisibilityStorageKey(
 }
 
 function deserializeLogTypeFilter(value: unknown): unknown[] {
-  const values = Array.isArray(value) ? value : value ? [value] : []
+  let values: unknown[] = []
+  if (Array.isArray(value)) values = value
+  else if (value) values = [value]
   return values.filter((item) => String(item) !== LOG_TYPE_ALL_VALUE)
 }
 
@@ -76,7 +79,12 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   const { t } = useTranslation()
   const { isAdminView: isAdmin } = useLogsViewScope()
   const isMobile = useMediaQuery('(max-width: 640px)')
-  const searchParams = route.useSearch()
+  const [searchParams, setSearchParams] = useState<UsageLogsSearchParams>(
+    () => {
+      const { start, end } = getDefaultTimeRange()
+      return { startTime: start.getTime(), endTime: end.getTime() }
+    }
+  )
 
   const {
     columnFilters,
@@ -85,8 +93,9 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     onPaginationChange,
     ensurePageInRange,
   } = useTableUrlState({
-    search: route.useSearch(),
-    navigate: route.useNavigate(),
+    search: EMPTY_SEARCH_PARAMS,
+    navigate: ignoreTableNavigation,
+    syncToUrl: false,
     pagination: { defaultPage: 1, defaultPageSize: isMobile ? 20 : 100 },
     globalFilter: { enabled: false },
     columnFilters: [
@@ -115,6 +124,12 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         : []),
     ],
   })
+
+  const handleSearchParamsChange = (next: UsageLogsSearchParams) => {
+    setSearchParams(next)
+    onColumnFiltersChange([])
+    onPaginationChange((current) => ({ ...current, pageIndex: 0 }))
+  }
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: [
@@ -200,9 +215,18 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       }
       toolbar={
         isCommon ? (
-          <CommonLogsFilterBar table={table} />
+          <CommonLogsFilterBar
+            table={table}
+            searchParams={searchParams}
+            onSearchParamsChange={handleSearchParamsChange}
+          />
         ) : (
-          <TaskLogsFilterBar table={table} logCategory={logCategory} />
+          <TaskLogsFilterBar
+            table={table}
+            logCategory={logCategory}
+            searchParams={searchParams}
+            onSearchParamsChange={handleSearchParamsChange}
+          />
         )
       }
       renderRow={(row) => {

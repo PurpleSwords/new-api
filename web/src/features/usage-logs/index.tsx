@@ -152,7 +152,10 @@ function UsageLogsContent() {
               </Tabs>
             )}
             <div className='min-h-0 flex-1'>
-              <UsageLogsTable logCategory={activeCategory} />
+              <UsageLogsTable
+                key={activeCategory}
+                logCategory={activeCategory}
+              />
             </div>
           </div>
         </SectionPageLayout.Content>
