@@ -1,0 +1,40 @@
+name: Sync upstream branches daily
+
+on:
+  schedule:
+    # 10:17 Asia/Shanghai; avoid the start-of-hour Actions queue peak.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+          - main
+          - develop
+
+    steps:
+      - name: Merge upstream default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            --field "branch=${TARGET_BRANCH}"
