@@ -23,7 +23,7 @@ for example:
 
 ```text
 ghcr.io/purpleswords/new-api:custom-web-search
-ghcr.io/purpleswords/new-api:custom-web-search-20260807-ca380fb
+ghcr.io/purpleswords/new-api:custom-web-search-YYYYMMDD-<short-sha>
 ```
 
 Prefer the commit-based tag for production deployments. The `latest` tag is
@@ -41,7 +41,7 @@ Compose or commit it to the repository.
 Set the image tag when invoking Compose:
 
 ```bash
-export NEW_API_IMAGE=ghcr.io/purpleswords/new-api:custom-web-search-20260807-ca380fb
+export NEW_API_IMAGE=ghcr.io/purpleswords/new-api:custom-web-search-YYYYMMDD-<short-sha>
 docker compose pull new-api
 docker compose up -d --no-deps --force-recreate new-api
 ```
