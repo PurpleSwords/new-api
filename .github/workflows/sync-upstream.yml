@@ -1,4 +1,4 @@
-name: Sync upstream branches daily
+name: Sync upstream and publish custom image daily
 
 on:
   schedule:
@@ -38,3 +38,35 @@ jobs:
             --header "X-GitHub-Api-Version: 2026-03-10" \
             "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
             --field "branch=${TARGET_BRANCH}"
+
+  sync_custom_branch:
+    name: Sync feature/web-search
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Merge upstream default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: feature/web-search
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            --field "branch=${TARGET_BRANCH}"
+
+  publish_custom_image:
+    name: Publish feature/web-search image
+    needs: [sync_custom_branch]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker-image-branch.yml
+    with:
+      branch: feature/web-search
