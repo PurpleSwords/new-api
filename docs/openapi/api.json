@@ -2616,7 +2616,7 @@
         ]
       }
     },
-    "/api/channel/": {
+    "/api/channel": {
       "get": {
         "summary": "获取所有渠道",
         "deprecated": false,
@@ -4139,7 +4139,7 @@
         ]
       }
     },
-    "/api/log/": {
+    "/api/log": {
       "get": {
         "summary": "获取所有日志",
         "deprecated": false,
@@ -4398,7 +4398,7 @@
         ]
       }
     },
-    "/api/data/": {
+    "/api/data": {
       "get": {
         "summary": "获取所有额度数据",
         "deprecated": false,
@@ -4448,7 +4448,7 @@
         ]
       }
     },
-    "/api/group/": {
+    "/api/group": {
       "get": {
         "summary": "获取所有分组",
         "deprecated": false,
@@ -4473,7 +4473,7 @@
         ]
       }
     },
-    "/api/prefill_group/": {
+    "/api/prefill_group": {
       "get": {
         "summary": "获取预填分组",
         "deprecated": false,
@@ -4580,7 +4580,7 @@
         ]
       }
     },
-    "/api/mj/": {
+    "/api/mj": {
       "get": {
         "summary": "获取所有Midjourney任务",
         "deprecated": false,
@@ -4630,7 +4630,7 @@
         ]
       }
     },
-    "/api/task/": {
+    "/api/task": {
       "get": {
         "summary": "获取所有任务",
         "deprecated": false,
