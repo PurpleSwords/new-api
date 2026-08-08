@@ -92,6 +92,7 @@ export interface ChannelSettings {
 
 export interface ChannelOtherSettings {
   azure_responses_version?: string
+  supports_responses_websocket?: boolean
   vertex_key_type?: 'json' | 'api_key'
   openrouter_enterprise?: boolean
   aws_key_type?: 'ak_sk' | 'api_key'
@@ -186,6 +187,10 @@ export interface ChannelTestResponse {
   message?: string
   error_code?: string
   time?: number
+  websocket_capability?: 'supported' | 'unsupported' | 'inconclusive'
+  websocket_status_code?: number
+  websocket_supported?: boolean
+  websocket_capability_updated?: boolean
   data?: {
     response_time?: number
     error?: string

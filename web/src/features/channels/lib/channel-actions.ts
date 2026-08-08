@@ -281,7 +281,8 @@ export async function handleTestChannel(
     success: boolean,
     responseTime?: number,
     error?: string,
-    errorCode?: string
+    errorCode?: string,
+    response?: ChannelTestResponse
   ) => void
 ): Promise<void> {
   const payload =
@@ -313,7 +314,7 @@ export async function handleTestChannel(
             : undefined
         )
       }
-      onTestComplete?.(true, responseTime)
+      onTestComplete?.(true, responseTime, undefined, undefined, response)
     } else {
       const errorMsg = response.message || i18next.t(ERROR_MESSAGES.TEST_FAILED)
       if (!options?.silent) {
@@ -323,7 +324,13 @@ export async function handleTestChannel(
             : errorMsg,
         })
       }
-      onTestComplete?.(false, responseTime, errorMsg, response.error_code)
+      onTestComplete?.(
+        false,
+        responseTime,
+        errorMsg,
+        response.error_code,
+        response
+      )
     }
   } catch (_error: unknown) {
     const err = _error as { response?: { data?: { message?: string } } }

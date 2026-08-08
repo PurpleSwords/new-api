@@ -113,7 +113,13 @@ type ModelRow = {
   model: string
 }
 
-type TestStatus = 'idle' | 'testing' | 'success' | 'error'
+type TestStatus =
+  | 'idle'
+  | 'testing'
+  | 'success'
+  | 'error'
+  | 'unsupported'
+  | 'inconclusive'
 
 type TestResult = {
   status: TestStatus
@@ -183,6 +189,10 @@ const endpointTypeOptions: Array<{ value: string; label: string }> = [
   { value: 'openai', label: 'OpenAI (/v1/chat/completions)' },
   { value: 'openai-response', label: 'OpenAI Responses (/v1/responses)' },
   {
+    value: 'openai-response-websocket',
+    label: 'OpenAI Responses WebSocket (/v1/responses)',
+  },
+  {
     value: 'openai-response-compact',
     label: 'OpenAI Response Compaction (/v1/responses/compact)',
   },
@@ -208,6 +218,7 @@ const STREAM_INCOMPATIBLE_ENDPOINTS = new Set([
   'image-generation',
   'jina-rerank',
   'openai-response-compact',
+  'openai-response-websocket',
 ])
 
 const MODEL_PRICE_ERROR_CODE = 'model_price_error'
@@ -549,6 +560,12 @@ function ChannelTestDialogContent({
       refreshList = true
     ): Promise<TestResult | undefined> => {
       if (!currentRow) return
+      if (
+        endpointType === 'openai-response-websocket' &&
+        testingModels.size > 0
+      ) {
+        return
+      }
 
       markModelTesting(model, true)
       updateTestResult(model, { status: 'testing' })
@@ -564,10 +581,36 @@ function ChannelTestDialogContent({
             stream: effectiveStreamTest || undefined,
             silent,
           },
-          (success, responseTime, error, errorCode) => {
+          (success, responseTime, error, errorCode, response) => {
             const completedAt = Date.now()
+            const isWebSocketProbe =
+              endpointType === 'openai-response-websocket'
+            const websocketStatus = isWebSocketProbe
+              ? response?.websocket_capability
+              : undefined
+            const capabilityUpdated =
+              response?.websocket_capability_updated === true
+            let status: TestStatus = success ? 'success' : 'error'
+            if (isWebSocketProbe) {
+              if (capabilityUpdated) {
+                if (websocketStatus === 'supported') {
+                  status = 'success'
+                } else if (websocketStatus === 'unsupported') {
+                  status = 'unsupported'
+                } else {
+                  status = 'inconclusive'
+                }
+              } else if (websocketStatus === 'inconclusive') {
+                status = 'inconclusive'
+              } else if (
+                websocketStatus === 'supported' ||
+                websocketStatus === 'unsupported'
+              ) {
+                status = 'error'
+              }
+            }
             finalResult = {
-              status: success ? 'success' : 'error',
+              status,
               responseTime,
               completedAt,
               error,
@@ -603,6 +646,7 @@ function ChannelTestDialogContent({
       markModelTesting,
       refreshChannelLists,
       t,
+      testingModels,
       updateTestResult,
     ]
   )
@@ -616,6 +660,14 @@ function ChannelTestDialogContent({
 
   const handleBatchTest = useCallback(
     async (modelsToTest: string[]) => {
+      if (endpointType === 'openai-response-websocket') {
+        toast.info(
+          t(
+            'Responses WebSocket capability is tested per channel with a single model, not in batch mode.'
+          )
+        )
+        return
+      }
       const uniqueModels = [
         ...new Set(modelsToTest.map((model) => model.trim()).filter(Boolean)),
       ]
@@ -747,6 +799,7 @@ function ChannelTestDialogContent({
     },
     [
       dismissBatchProgressToast,
+      endpointType,
       refreshChannelLists,
       t,
       testSingleModel,
@@ -930,7 +983,12 @@ function ChannelTestDialogContent({
                     variant='ghost'
                     size='icon-sm'
                     onClick={() => testSingleModel(model)}
-                    disabled={isTestingModel || isBatchTesting}
+                    disabled={
+                      isTestingModel ||
+                      isBatchTesting ||
+                      (endpointType === 'openai-response-websocket' &&
+                        isAnyTesting)
+                    }
                     aria-label={t('Test Connection')}
                   />
                 }
@@ -950,7 +1008,9 @@ function ChannelTestDialogContent({
     ],
     [
       defaultTestModel,
+      endpointType,
       isBatchTesting,
+      isAnyTesting,
       t,
       testResults,
       testingModels,
@@ -1027,9 +1087,13 @@ function ChannelTestDialogContent({
                 </SelectContent>
               </Select>
               <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Override the endpoint used for testing. Leave empty to auto detect.'
-                )}
+                {endpointType === 'openai-response-websocket'
+                  ? t(
+                      'This test sends a minimal Responses WebSocket response.create warmup request (generate=false) to validate the full upstream chain. It does not create a local usage log.'
+                    )
+                  : t(
+                      'Override the endpoint used for testing. Leave empty to auto detect.'
+                    )}
               </p>
             </div>
             <div className='grid gap-2'>
@@ -1075,7 +1139,11 @@ function ChannelTestDialogContent({
                       <Button
                         size='sm'
                         onClick={() => handleBatchTest(filteredModels)}
-                        disabled={isAnyTesting || filteredModels.length === 0}
+                        disabled={
+                          isAnyTesting ||
+                          filteredModels.length === 0 ||
+                          endpointType === 'openai-response-websocket'
+                        }
                       >
                         {testAllButtonLabel}
                       </Button>
@@ -1212,6 +1280,22 @@ function TestStatusCell({ result }: { result?: TestResult }) {
     )
   }
 
+  if (result.status === 'unsupported') {
+    return (
+      <StatusBadge label={t('Unsupported')} variant='danger' copyable={false} />
+    )
+  }
+
+  if (result.status === 'inconclusive') {
+    return (
+      <StatusBadge
+        label={t('Inconclusive')}
+        variant='warning'
+        copyable={false}
+      />
+    )
+  }
+
   return <StatusBadge label={t('Failed')} variant='danger' copyable={false} />
 }
 
@@ -1249,6 +1333,32 @@ function TestResultCell({
     )
   }
 
+  if (result.status === 'unsupported') {
+    return (
+      <FailureResultContent
+        result={result}
+        model={model}
+        onOpenDetails={onOpenDetails}
+        fallbackSummary={t(
+          'Responses WebSocket is not supported by this channel'
+        )}
+      />
+    )
+  }
+
+  if (result.status === 'inconclusive') {
+    return (
+      <FailureResultContent
+        result={result}
+        model={model}
+        onOpenDetails={onOpenDetails}
+        fallbackSummary={t(
+          'Responses WebSocket capability could not be determined'
+        )}
+      />
+    )
+  }
+
   return (
     <FailureResultContent
       result={result}
@@ -1262,10 +1372,12 @@ function FailureResultContent({
   result,
   model,
   onOpenDetails,
+  fallbackSummary,
 }: {
   result: TestResult
   model: string
   onOpenDetails: (details: FailureDetailsState) => void
+  fallbackSummary?: string
 }) {
   const { t } = useTranslation()
   const errorText = result.error?.trim()
@@ -1275,7 +1387,7 @@ function FailureResultContent({
   )
   const { summary, details } = getFailureStatusDisplay({
     errorText,
-    fallbackSummary: t('Test failed'),
+    fallbackSummary: fallbackSummary ?? t('Test failed'),
     isModelPriceError,
     modelPriceSummary,
   })

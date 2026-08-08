@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,10 +11,14 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	appconstant "github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
+	appmodel "github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -215,6 +220,325 @@ func TestResponsesWSInvalidRequestErrorUsesBadRequestStatus(t *testing.T) {
 	}
 	if data.Status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", data.Status, http.StatusBadRequest)
+	}
+}
+
+func TestSupportsResponsesWebSocketUsesChannelCapability(t *testing.T) {
+	tests := []struct {
+		name        string
+		channelType int
+		want        bool
+	}{
+		{name: "OpenAI untested", channelType: appconstant.ChannelTypeOpenAI, want: false},
+		{name: "Codex untested", channelType: appconstant.ChannelTypeCodex, want: false},
+		{name: "Anthropic", channelType: appconstant.ChannelTypeAnthropic, want: false},
+		{name: "OpenRouter", channelType: appconstant.ChannelTypeOpenRouter, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := &appmodel.Channel{Type: test.channelType}
+			if got := supportsResponsesWebSocket(channel); got != test.want {
+				t.Fatalf("supportsResponsesWebSocket(type=%d) = %v, want %v", test.channelType, got, test.want)
+			}
+		})
+	}
+	if supportsResponsesWebSocket(nil) {
+		t.Fatal("nil channel must not support Responses WebSocket")
+	}
+
+	enabled := true
+	for _, channelType := range []int{appconstant.ChannelTypeOpenAI, appconstant.ChannelTypeCodex} {
+		channel := &appmodel.Channel{Type: channelType}
+		channel.SetOtherSettings(dto.ChannelOtherSettings{SupportsResponsesWebSocket: &enabled})
+		if !supportsResponsesWebSocket(channel) {
+			t.Fatalf("explicitly enabled channel type %d must support Responses WebSocket", channelType)
+		}
+	}
+
+	disabled := false
+	openAI := &appmodel.Channel{Type: appconstant.ChannelTypeOpenAI}
+	openAI.SetOtherSettings(dto.ChannelOtherSettings{SupportsResponsesWebSocket: &disabled})
+	if supportsResponsesWebSocket(openAI) {
+		t.Fatal("explicitly disabled OpenAI channel must not support Responses WebSocket")
+	}
+
+	anthropic := &appmodel.Channel{Type: appconstant.ChannelTypeAnthropic}
+	anthropic.SetOtherSettings(dto.ChannelOtherSettings{SupportsResponsesWebSocket: &enabled})
+	if supportsResponsesWebSocket(anthropic) {
+		t.Fatal("unsupported channel type must not be enabled by per-channel override")
+	}
+}
+
+func TestIsResponsesWSProbeUnsupportedStatus(t *testing.T) {
+	tests := []struct {
+		status int
+		want   bool
+	}{
+		{status: http.StatusOK, want: true},
+		{status: http.StatusNotFound, want: true},
+		{status: http.StatusMethodNotAllowed, want: true},
+		{status: http.StatusUpgradeRequired, want: true},
+		{status: http.StatusNotImplemented, want: true},
+		{status: http.StatusUnauthorized, want: false},
+		{status: http.StatusForbidden, want: false},
+		{status: http.StatusTooManyRequests, want: false},
+		{status: http.StatusInternalServerError, want: false},
+	}
+	for _, test := range tests {
+		if got := isResponsesWSProbeUnsupportedStatus(test.status); got != test.want {
+			t.Errorf("isResponsesWSProbeUnsupportedStatus(%d) = %v, want %v", test.status, got, test.want)
+		}
+	}
+}
+
+func TestIsResponsesWSProtocolUnsupportedError(t *testing.T) {
+	tests := []struct {
+		name  string
+		event responsesWSErrorEvent
+		want  bool
+	}{
+		{
+			name: "websocket unsupported message",
+			event: responsesWSErrorEvent{
+				Status: http.StatusNotFound,
+				Error: &types.OpenAIError{
+					Type:    "invalid_request_error",
+					Message: "websocket not supported",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "websocket unsupported without status",
+			event: responsesWSErrorEvent{
+				Error: &types.OpenAIError{
+					Type:    "invalid_request_error",
+					Message: "websocket not supported",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "model not found",
+			event: responsesWSErrorEvent{
+				Status: http.StatusNotFound,
+				Error: &types.OpenAIError{
+					Type:    "invalid_request_error",
+					Message: "model not found",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "websocket upgrade failed",
+			event: responsesWSErrorEvent{
+				Status: http.StatusBadGateway,
+				Error: &types.OpenAIError{
+					Type:    "server_error",
+					Message: "websocket upgrade failed",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "nil error",
+			event: responsesWSErrorEvent{
+				Status: http.StatusNotFound,
+			},
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isResponsesWSProtocolUnsupportedError(test.event); got != test.want {
+				t.Fatalf("isResponsesWSProtocolUnsupportedError() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestProbeResponsesWebSocketUpstreamSendsRealResponseCreate(t *testing.T) {
+	serverResult := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(responsesWSOpenAIBetaHeader); got != responsesWSOpenAIBetaValue {
+			serverResult <- errors.New("missing Responses WebSocket beta header")
+			return
+		}
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			serverResult <- err
+			return
+		}
+		defer conn.Close()
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			serverResult <- err
+			return
+		}
+		var event map[string]any
+		if err := common.Unmarshal(message, &event); err != nil {
+			serverResult <- err
+			return
+		}
+		if event["type"] != responsesWSEventTypeResponseCreate || event["model"] != "gpt-5.3-codex" {
+			serverResult <- fmt.Errorf("unexpected probe event: %s", message)
+			return
+		}
+		if event["generate"] != false || event["store"] != false || event["max_output_tokens"] != float64(16) {
+			serverResult <- fmt.Errorf("unexpected probe controls: %s", message)
+			return
+		}
+		if _, ok := event["input"]; !ok {
+			serverResult <- errors.New("probe event has no input")
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp_probe","status":"in_progress"}}`)); err != nil {
+			serverResult <- err
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp_probe","status":"completed"}}`)); err != nil {
+			serverResult <- err
+			return
+		}
+		serverResult <- nil
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	baseURL := server.URL
+	channel := &appmodel.Channel{
+		Id:      1,
+		Type:    appconstant.ChannelTypeOpenAI,
+		Name:    "probe",
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+	}
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, "gpt-5.3-codex"); apiErr != nil {
+		t.Fatalf("setup channel context: %v", apiErr)
+	}
+
+	result := ProbeResponsesWebSocketUpstream(c, channel, dto.OpenAIResponsesRequest{Model: "gpt-5.3-codex"})
+	if result.Supported == nil || !*result.Supported {
+		t.Fatalf("probe result = %+v, want supported", result)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeResponsesWebSocketUpstreamFailedResponseIsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.failed","response":{"id":"resp_probe","status":"failed","error":{"message":"upstream quota exhausted"}}}`))
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	baseURL := server.URL
+	channel := &appmodel.Channel{
+		Id:      1,
+		Type:    appconstant.ChannelTypeOpenAI,
+		Name:    "probe",
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+	}
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, "gpt-5.3-codex"); apiErr != nil {
+		t.Fatalf("setup channel context: %v", apiErr)
+	}
+
+	result := ProbeResponsesWebSocketUpstream(c, channel, dto.OpenAIResponsesRequest{Model: "gpt-5.3-codex"})
+	if result.Supported != nil {
+		t.Fatalf("probe result = %+v, want inconclusive (Supported=nil)", result)
+	}
+	if !strings.Contains(result.Message, "quota exhausted") {
+		t.Fatalf("probe message = %q, want upstream failure detail", result.Message)
+	}
+}
+
+func TestProbeResponsesWebSocketUpstreamCloseAfterRequestIsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(1013, "no available account"),
+			time.Now().Add(time.Second),
+		)
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	baseURL := server.URL
+	channel := &appmodel.Channel{
+		Id:      1,
+		Type:    appconstant.ChannelTypeOpenAI,
+		Name:    "probe",
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+	}
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, "gpt-5.3-codex"); apiErr != nil {
+		t.Fatalf("setup channel context: %v", apiErr)
+	}
+
+	result := ProbeResponsesWebSocketUpstream(c, channel, dto.OpenAIResponsesRequest{Model: "gpt-5.3-codex"})
+	if result.Supported != nil {
+		t.Fatalf("probe result = %+v, want inconclusive (Supported=nil)", result)
+	}
+	if !strings.Contains(result.Message, "no available account") {
+		t.Fatalf("probe message = %q, want close reason", result.Message)
+	}
+}
+
+func TestProbeResponsesWebSocketUpstreamModelErrorEventIsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","status":404,"error":{"type":"invalid_request_error","message":"model not found"}}`))
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	baseURL := server.URL
+	channel := &appmodel.Channel{
+		Id:      1,
+		Type:    appconstant.ChannelTypeOpenAI,
+		Name:    "probe",
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+	}
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, "gpt-5.3-codex"); apiErr != nil {
+		t.Fatalf("setup channel context: %v", apiErr)
+	}
+
+	result := ProbeResponsesWebSocketUpstream(c, channel, dto.OpenAIResponsesRequest{Model: "gpt-5.3-codex"})
+	if result.Supported != nil {
+		t.Fatalf("probe result = %+v, want inconclusive (Supported=nil)", result)
+	}
+	if !strings.Contains(result.Message, "model not found") {
+		t.Fatalf("probe message = %q, want upstream error detail", result.Message)
 	}
 }
 

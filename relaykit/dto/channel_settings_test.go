@@ -2,6 +2,7 @@ package dto
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"testing"
 
@@ -554,6 +555,25 @@ func TestChannelSettingsHTTPTransportJSONRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(encoded), `"http2_connection_shards":4`)
 	assert.NotContains(t, string(encoded), "http_protocol")
+}
+
+func TestChannelOtherSettingsResponsesWebSocketJSONRoundTrip(t *testing.T) {
+	encoded, err := json.Marshal(ChannelOtherSettings{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "supports_responses_websocket")
+
+	for _, enabled := range []bool{true, false} {
+		encoded, err = json.Marshal(ChannelOtherSettings{
+			SupportsResponsesWebSocket: &enabled,
+		})
+		require.NoError(t, err)
+		assert.Contains(t, string(encoded), fmt.Sprintf(`"supports_responses_websocket":%t`, enabled))
+
+		var decoded ChannelOtherSettings
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		require.NotNil(t, decoded.SupportsResponsesWebSocket)
+		assert.Equal(t, enabled, *decoded.SupportsResponsesWebSocket)
+	}
 }
 
 func TestChannelSettingsValidateHTTPTransport(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -36,10 +37,47 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const endpointTypeOpenAIResponsesWebSocket = "openai-response-websocket"
+
+var channelTestProbeLocksMu sync.Mutex
+var channelTestProbeLocks = make(map[int]*channelTestProbeLock)
+
+type channelTestProbeLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockChannelTestProbe serializes the whole Responses WebSocket capability
+// probe for one channel: upstream probe, settings persistence and cache update
+// all happen while the lock is held so concurrent model tests cannot race on
+// the channel-level boolean.
+func lockChannelTestProbe(channelID int) func() {
+	channelTestProbeLocksMu.Lock()
+	lock := channelTestProbeLocks[channelID]
+	if lock == nil {
+		lock = &channelTestProbeLock{}
+		channelTestProbeLocks[channelID] = lock
+	}
+	lock.refs++
+	channelTestProbeLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		channelTestProbeLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(channelTestProbeLocks, channelID)
+		}
+		channelTestProbeLocksMu.Unlock()
+	}
+}
+
 type testResult struct {
-	context     *gin.Context
-	localErr    error
-	newAPIError *types.NewAPIError
+	context                 *gin.Context
+	localErr                error
+	newAPIError             *types.NewAPIError
+	responsesWebSocketProbe *relay.ResponsesWebSocketProbeResult
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
@@ -114,6 +152,11 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	endpointType = normalizeChannelTestEndpoint(channel, testModel, endpointType)
 
 	requestPath := "/v1/chat/completions"
+	requestMethod := http.MethodPost
+	if endpointType == endpointTypeOpenAIResponsesWebSocket {
+		requestPath = "/v1/responses"
+		requestMethod = http.MethodGet
+	}
 
 	// 如果指定了端点类型，使用指定的端点类型
 	if endpointType != "" {
@@ -160,7 +203,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		testModel = ratio_setting.WithCompactModelSuffix(testModel)
 	}
 
-	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, requestPath, nil)
+	c.Request = httptest.NewRequestWithContext(ctx, requestMethod, requestPath, nil)
 
 	cache, err := model.GetUserCache(testUserID)
 	if err != nil {
@@ -186,6 +229,22 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			localErr:    newAPIError,
 			newAPIError: newAPIError,
 		}
+	}
+
+	if endpointType == endpointTypeOpenAIResponsesWebSocket {
+		probe := relay.ProbeResponsesWebSocketUpstream(c, channel, dto.OpenAIResponsesRequest{
+			Model: testModel,
+		})
+		result := testResult{
+			context:                 c,
+			responsesWebSocketProbe: &probe,
+		}
+		if probe.Supported == nil {
+			result.localErr = errors.New(probe.Message)
+		} else if !*probe.Supported {
+			result.localErr = errors.New(probe.Message)
+		}
+		return result
 	}
 
 	// Determine relay format based on endpoint type or request path
@@ -885,12 +944,42 @@ func TestChannel(c *gin.Context) {
 	if c.Request != nil {
 		requestCtx = c.Request.Context()
 	}
+	if endpointType == endpointTypeOpenAIResponsesWebSocket {
+		unlock := lockChannelTestProbe(channel.Id)
+		defer unlock()
+	}
 	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	websocketResponse := gin.H{}
+	if probe := result.responsesWebSocketProbe; probe != nil {
+		capability := "inconclusive"
+		if probe.Supported != nil {
+			if *probe.Supported {
+				capability = "supported"
+			} else {
+				capability = "unsupported"
+			}
+		}
+		websocketResponse["websocket_capability"] = capability
+		websocketResponse["websocket_status_code"] = probe.StatusCode
+		if probe.Supported != nil {
+			websocketResponse["websocket_supported"] = *probe.Supported
+			updatedChannel, updateErr := model.UpdateChannelResponsesWebSocketCapability(channel.Id, *probe.Supported)
+			if updateErr != nil {
+				result.localErr = fmt.Errorf("probe completed but failed to save channel capability: %w", updateErr)
+			} else {
+				model.CacheUpdateChannel(updatedChannel)
+				websocketResponse["websocket_capability_updated"] = true
+			}
+		}
+	}
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
 			"message": result.localErr.Error(),
 			"time":    0.0,
+		}
+		for key, value := range websocketResponse {
+			resp[key] = value
 		}
 		if result.newAPIError != nil {
 			resp["error_code"] = result.newAPIError.GetErrorCode()
@@ -911,11 +1000,15 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"success": true,
 		"message": "",
 		"time":    consumedTime,
-	})
+	}
+	for key, value := range websocketResponse {
+		resp[key] = value
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // channelTestSummary records the outcome of one channel test cycle so the

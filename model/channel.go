@@ -1026,6 +1026,43 @@ func (channel *Channel) SetOtherSettings(setting dto.ChannelOtherSettings) {
 	channel.OtherSettings = string(settingBytes)
 }
 
+// UpdateChannelResponsesWebSocketCapability stores a conclusive upstream probe
+// result without touching the channel key or any unrelated columns.
+func UpdateChannelResponsesWebSocketCapability(channelID int, supported bool) (*Channel, error) {
+	channel := &Channel{}
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockForUpdate(tx).First(channel, "id = ?", channelID).Error; err != nil {
+			return err
+		}
+
+		settings := map[string]json.RawMessage{}
+		if channel.OtherSettings != "" {
+			if err := common.UnmarshalJsonStr(channel.OtherSettings, &settings); err != nil {
+				return fmt.Errorf("invalid channel other settings: %w", err)
+			}
+		}
+		if settings == nil {
+			settings = map[string]json.RawMessage{}
+		}
+		supportedBytes, err := common.Marshal(supported)
+		if err != nil {
+			return fmt.Errorf("marshal Responses WebSocket capability: %w", err)
+		}
+		settings["supports_responses_websocket"] = supportedBytes
+		settingsBytes, err := common.Marshal(settings)
+		if err != nil {
+			return fmt.Errorf("marshal channel other settings: %w", err)
+		}
+
+		channel.OtherSettings = string(settingsBytes)
+		return tx.Model(&Channel{}).Where("id = ?", channelID).Update("settings", channel.OtherSettings).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return channel, nil
+}
+
 func (channel *Channel) GetParamOverride() map[string]interface{} {
 	paramOverride := make(map[string]interface{})
 	if channel.ParamOverride != nil && *channel.ParamOverride != "" {

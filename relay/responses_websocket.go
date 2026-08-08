@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,9 +35,31 @@ const (
 	responsesWSMaxPingIntervalSeconds      = 3600
 	responsesWSControlWriteTimeout         = 10 * time.Second
 	responsesWSClientPongTimeoutMultiplier = 3
+	responsesWSProbeTimeout                = 15 * time.Second
+	responsesWSOpenAIBetaHeader            = "OpenAI-Beta"
+	responsesWSOpenAIBetaValue             = "responses_websockets=2026-02-06"
 )
 
 var responsesWSClientPingInterval = loadResponsesWSClientPingInterval()
+
+// Responses WebSocket support is a channel capability, not a property of the
+// Responses request format. Keep this allowlist next to the relay so channels
+// that only expose HTTP Responses are rejected before upstream WS dialing.
+var responsesWebSocketSupportedChannelTypes = map[int]bool{
+	appconstant.ChannelTypeOpenAI: true,
+	appconstant.ChannelTypeCodex:  true,
+}
+
+func supportsResponsesWebSocket(channel *appmodel.Channel) bool {
+	if channel == nil {
+		return false
+	}
+	if !responsesWebSocketSupportedChannelTypes[channel.Type] {
+		return false
+	}
+	configured := channel.GetOtherSettings().SupportsResponsesWebSocket
+	return configured != nil && *configured
+}
 
 func loadResponsesWSClientPingInterval() time.Duration {
 	seconds := common.GetEnvOrDefault("RESPONSES_WS_PING_INTERVAL_SECONDS", responsesWSDefaultPingIntervalSeconds)
@@ -67,6 +90,12 @@ type responsesWSErrorEvent struct {
 	Status  int                `json:"status"`
 	EventID string             `json:"event_id,omitempty"`
 	Error   *types.OpenAIError `json:"error"`
+}
+
+type ResponsesWebSocketProbeResult struct {
+	Supported  *bool
+	StatusCode int
+	Message    string
 }
 
 type responsesWSCallState struct {
@@ -366,17 +395,16 @@ func (s *responsesWSSession) connectAndSendFirst(create responsesWSCreateRequest
 			lastErr = apiErr
 			break
 		}
-		addResponsesWSUsedChannel(s.c, channel.Id)
-
-		if channel.Type != appconstant.ChannelTypeOpenAI && channel.Type != appconstant.ChannelTypeCodex {
+		if !supportsResponsesWebSocket(channel) {
 			lastErr = types.NewErrorWithStatusCode(
-				fmt.Errorf("responses websocket only supports OpenAI and Codex channels, got channel type %d", channel.Type),
+				fmt.Errorf("channel type %d does not support Responses WebSocket relay", channel.Type),
 				types.ErrorCodeInvalidRequest,
 				http.StatusBadRequest,
 				types.ErrOptionWithSkipRetry(),
 			)
 			continue
 		}
+		addResponsesWSUsedChannel(s.c, channel.Id)
 
 		state, payload, apiErr := s.prepareCall(create, commitRate)
 		if apiErr != nil {
@@ -591,6 +619,14 @@ func removeResponsesWSTransportFields(jsonData []byte) ([]byte, error) {
 }
 
 func dialResponsesWebSocketUpstream(c *gin.Context, adaptor relaychannel.Adaptor, info *relaycommon.RelayInfo) (*websocket.Conn, *types.NewAPIError) {
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	return dialResponsesWebSocketUpstreamWithContext(ctx, c, adaptor, info)
+}
+
+func dialResponsesWebSocketUpstreamWithContext(ctx context.Context, c *gin.Context, adaptor relaychannel.Adaptor, info *relaycommon.RelayInfo) (*websocket.Conn, *types.NewAPIError) {
 	fullRequestURL, err := adaptor.GetRequestURL(info)
 	if err != nil {
 		return nil, types.NewError(fmt.Errorf("get request url failed: %w", err), types.ErrorCodeDoRequestFailed)
@@ -601,6 +637,9 @@ func dialResponsesWebSocketUpstream(c *gin.Context, adaptor relaychannel.Adaptor
 	if err := adaptor.SetupRequestHeader(c, &targetHeader, info); err != nil {
 		return nil, types.NewError(fmt.Errorf("setup request header failed: %w", err), types.ErrorCodeDoRequestFailed)
 	}
+	if beta := strings.TrimSpace(c.GetHeader(responsesWSOpenAIBetaHeader)); beta != "" {
+		targetHeader.Set(responsesWSOpenAIBetaHeader, beta)
+	}
 	headerOverride, err := relaychannel.ResolveHeaderOverride(info, c)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelHeaderOverrideInvalid)
@@ -609,15 +648,173 @@ func dialResponsesWebSocketUpstream(c *gin.Context, adaptor relaychannel.Adaptor
 		targetHeader.Set(key, value)
 	}
 
-	targetConn, resp, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
+	targetConn, resp, err := websocket.DefaultDialer.DialContext(ctx, fullRequestURL, targetHeader)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		if resp != nil {
 			statusCode = resp.StatusCode
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 		}
 		return nil, types.NewErrorWithStatusCode(fmt.Errorf("dial failed to %s: %w", fullRequestURL, err), types.ErrorCodeDoRequestFailed, statusCode)
 	}
 	return targetConn, nil
+}
+
+func ProbeResponsesWebSocketUpstream(c *gin.Context, channel *appmodel.Channel, req dto.OpenAIResponsesRequest) (result ResponsesWebSocketProbeResult) {
+	defer func() {
+		logResponsesWebSocketProbeResult(channel, result)
+	}()
+
+	if channel == nil || !responsesWebSocketSupportedChannelTypes[channel.Type] {
+		return newResponsesWSProbeResult(false, http.StatusNotImplemented, "channel type does not support Responses WebSocket relay")
+	}
+	if c == nil || c.Request == nil {
+		return ResponsesWebSocketProbeResult{Message: "missing channel test request context"}
+	}
+	if strings.TrimSpace(c.GetHeader(responsesWSOpenAIBetaHeader)) == "" {
+		c.Request.Header.Set(responsesWSOpenAIBetaHeader, responsesWSOpenAIBetaValue)
+	}
+
+	info := relaycommon.GenRelayInfoResponses(c, &req)
+	info.IsChannelTest = true
+	info.InitChannelMeta(c)
+	adaptor := GetAdaptor(info.ApiType)
+	if adaptor == nil {
+		return ResponsesWebSocketProbeResult{Message: fmt.Sprintf("invalid api type: %d", info.ApiType)}
+	}
+	adaptor.Init(info)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), responsesWSProbeTimeout)
+	defer cancel()
+	if len(req.Input) == 0 {
+		req.Input = common.RawMessage(`[{"role":"user","content":"ws-capability-probe"}]`)
+	}
+	req.Store = common.RawMessage("false")
+	req.MaxOutputTokens = common.GetPointer(uint(16))
+	payload, apiErr := buildResponsesWSCreatePayload(c, info, req, common.RawMessage("false"))
+	if apiErr != nil {
+		return ResponsesWebSocketProbeResult{StatusCode: apiErr.StatusCode, Message: apiErr.Error()}
+	}
+	target, apiErr := dialResponsesWebSocketUpstreamWithContext(ctx, c, adaptor, info)
+	if apiErr != nil {
+		if isResponsesWSProbeUnsupportedStatus(apiErr.StatusCode) {
+			return newResponsesWSProbeResult(false, apiErr.StatusCode, apiErr.Error())
+		}
+		return ResponsesWebSocketProbeResult{StatusCode: apiErr.StatusCode, Message: apiErr.Error()}
+	}
+	defer target.Close()
+
+	deadline := time.Now().Add(responsesWSProbeTimeout)
+	_ = target.SetWriteDeadline(deadline)
+	if err := target.WriteMessage(websocket.TextMessage, payload); err != nil {
+		return ResponsesWebSocketProbeResult{Message: fmt.Sprintf("write Responses WebSocket probe request: %v", err)}
+	}
+	_ = target.SetReadDeadline(deadline)
+
+	for {
+		_, message, err := target.ReadMessage()
+		if err != nil {
+			return ResponsesWebSocketProbeResult{Message: fmt.Sprintf("read Responses WebSocket probe response: %v", err)}
+		}
+
+		var event dto.ResponsesStreamResponse
+		if err := common.Unmarshal(message, &event); err != nil || strings.TrimSpace(event.Type) == "" {
+			continue
+		}
+		switch event.Type {
+		case "response.completed", "response.done", "response.incomplete":
+			return newResponsesWSProbeResult(true, http.StatusSwitchingProtocols, fmt.Sprintf("Responses WebSocket response.create probe completed with %s", event.Type))
+		case "response.failed", "response.cancelled", "response.canceled":
+			return ResponsesWebSocketProbeResult{Message: responsesWSProbeFailureMessage(event)}
+		case "error":
+			var errorEvent responsesWSErrorEvent
+			if err := common.Unmarshal(message, &errorEvent); err == nil {
+				messageText := "Responses WebSocket returned an error event"
+				if errorEvent.Error != nil && strings.TrimSpace(errorEvent.Error.Message) != "" {
+					messageText = errorEvent.Error.Message
+				}
+				statusCode := errorEvent.Status
+				if isResponsesWSProtocolUnsupportedError(errorEvent) {
+					if statusCode == 0 {
+						statusCode = http.StatusNotImplemented
+					}
+					return newResponsesWSProbeResult(false, statusCode, messageText)
+				}
+				if statusCode == 0 {
+					return ResponsesWebSocketProbeResult{Message: messageText}
+				}
+				return ResponsesWebSocketProbeResult{StatusCode: statusCode, Message: messageText}
+			}
+			return ResponsesWebSocketProbeResult{Message: "Responses WebSocket returned an invalid error event"}
+		}
+	}
+}
+
+func isResponsesWSProtocolUnsupportedError(event responsesWSErrorEvent) bool {
+	if event.Error == nil {
+		return false
+	}
+	text := strings.ToLower(fmt.Sprintf("%s %s %v", event.Error.Type, event.Error.Message, event.Error.Code))
+	return strings.Contains(text, "websocket") &&
+		(strings.Contains(text, "unsupported") ||
+			strings.Contains(text, "not support") ||
+			strings.Contains(text, "not implemented"))
+}
+
+func logResponsesWebSocketProbeResult(channel *appmodel.Channel, result ResponsesWebSocketProbeResult) {
+	capability := "inconclusive"
+	if result.Supported != nil {
+		if *result.Supported {
+			capability = "supported"
+		} else {
+			capability = "unsupported"
+		}
+	}
+	channelID := 0
+	channelName := ""
+	channelType := 0
+	if channel != nil {
+		channelID = channel.Id
+		channelName = channel.Name
+		channelType = channel.Type
+	}
+	common.SysLog(fmt.Sprintf(
+		"Responses WebSocket capability test: channel_id=%d name=%s type=%d capability=%s status_code=%d message=%s",
+		channelID,
+		channelName,
+		channelType,
+		capability,
+		result.StatusCode,
+		result.Message,
+	))
+}
+
+func responsesWSProbeFailureMessage(event dto.ResponsesStreamResponse) string {
+	if event.Response != nil {
+		if responseError := event.Response.GetOpenAIError(); responseError != nil && strings.TrimSpace(responseError.Message) != "" {
+			return responseError.Message
+		}
+	}
+	return fmt.Sprintf("Responses WebSocket returned %s", event.Type)
+}
+
+func newResponsesWSProbeResult(supported bool, statusCode int, message string) ResponsesWebSocketProbeResult {
+	return ResponsesWebSocketProbeResult{
+		Supported:  common.GetPointer(supported),
+		StatusCode: statusCode,
+		Message:    message,
+	}
+}
+
+func isResponsesWSProbeUnsupportedStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusOK, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUpgradeRequired, http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
 }
 
 func toWebSocketURL(raw string) string {
@@ -915,6 +1112,14 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 		}
 		if channel.Status != common.ChannelStatusEnabled {
 			return nil, types.NewErrorWithStatusCode(errors.New("specified channel is disabled"), types.ErrorCodeGetChannelFailed, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		}
+		if !supportsResponsesWebSocket(channel) {
+			return nil, types.NewErrorWithStatusCode(
+				fmt.Errorf("specified channel type %d does not support Responses WebSocket relay", channel.Type),
+				types.ErrorCodeInvalidRequest,
+				http.StatusBadRequest,
+				types.ErrOptionWithSkipRetry(),
+			)
 		}
 		if err := middleware.SetupContextForSelectedChannel(c, channel, modelName); err != nil {
 			return nil, err
