@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
 )
 
@@ -351,21 +352,7 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		// 先检测是否为ws
-		if c.Request.Header.Get("Sec-WebSocket-Protocol") != "" {
-			// Sec-WebSocket-Protocol: realtime, openai-insecure-api-key.sk-xxx, openai-beta.realtime-v1
-			// read sk from Sec-WebSocket-Protocol
-			key := c.Request.Header.Get("Sec-WebSocket-Protocol")
-			parts := strings.Split(key, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if strings.HasPrefix(part, "openai-insecure-api-key") {
-					key = strings.TrimPrefix(part, "openai-insecure-api-key.")
-					break
-				}
-			}
-			c.Request.Header.Set("Authorization", "Bearer "+key)
-		}
+		applyWebSocketSubprotocolAuthorization(c.Request)
 		// 检查path包含/v1/messages 或 /v1/models
 		if strings.Contains(c.Request.URL.Path, "/v1/messages") || strings.Contains(c.Request.URL.Path, "/v1/models") {
 			anthropicKey := c.Request.Header.Get("x-api-key")
@@ -480,6 +467,34 @@ func TokenAuth() func(c *gin.Context) {
 		}
 		c.Next()
 	}
+}
+
+func applyWebSocketSubprotocolAuthorization(request *http.Request) bool {
+	if request == nil || !websocket.IsWebSocketUpgrade(request) {
+		return false
+	}
+	key, ok := apiKeyFromWebSocketSubprotocol(request.Header.Get("Sec-WebSocket-Protocol"))
+	if !ok {
+		return false
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	return true
+}
+
+func apiKeyFromWebSocketSubprotocol(protocols string) (string, bool) {
+	if protocols == "" {
+		return "", false
+	}
+	const insecureAPIKeyPrefix = "openai-insecure-api-key."
+	parts := strings.Split(protocols, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, insecureAPIKeyPrefix) {
+			key := strings.TrimPrefix(part, insecureAPIKeyPrefix)
+			return key, key != ""
+		}
+	}
+	return "", false
 }
 
 func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) error {
