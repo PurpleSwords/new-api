@@ -28,7 +28,28 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const responsesWSEventTypeResponseCreate = "response.create"
+const (
+	responsesWSEventTypeResponseCreate     = "response.create"
+	responsesWSDefaultPingIntervalSeconds  = 30
+	responsesWSMaxPingIntervalSeconds      = 3600
+	responsesWSControlWriteTimeout         = 10 * time.Second
+	responsesWSClientPongTimeoutMultiplier = 3
+)
+
+var responsesWSClientPingInterval = loadResponsesWSClientPingInterval()
+
+func loadResponsesWSClientPingInterval() time.Duration {
+	seconds := common.GetEnvOrDefault("RESPONSES_WS_PING_INTERVAL_SECONDS", responsesWSDefaultPingIntervalSeconds)
+	if seconds > responsesWSMaxPingIntervalSeconds {
+		common.SysError(fmt.Sprintf(
+			"RESPONSES_WS_PING_INTERVAL_SECONDS must not exceed %d, using default value: %d",
+			responsesWSMaxPingIntervalSeconds,
+			responsesWSDefaultPingIntervalSeconds,
+		))
+		seconds = responsesWSDefaultPingIntervalSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
 
 type responsesWSCreateEvent struct {
 	Type    string            `json:"type"`
@@ -76,10 +97,23 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn) *types.New
 		c:      c,
 		client: client,
 	}
+	stopKeepalive, err := startResponsesWSClientKeepalive(client, responsesWSClientPingInterval)
+	if err != nil {
+		return types.NewError(fmt.Errorf("configure responses websocket keepalive: %w", err), types.ErrorCodeDoRequestFailed, types.ErrOptionWithSkipRetry())
+	}
+	defer stopKeepalive()
 	defer session.closeTarget()
 	defer session.failCurrent()
 
 	for {
+		// Request preparation and upstream dialing run in this goroutine. Renew the
+		// deadline before blocking again so that their latency cannot expire it.
+		if responsesWSClientPingInterval > 0 {
+			pongTimeout := responsesWSClientPingInterval * responsesWSClientPongTimeoutMultiplier
+			if err := client.SetReadDeadline(time.Now().Add(pongTimeout)); err != nil {
+				return types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+			}
+		}
 		messageType, message, err := client.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -118,6 +152,47 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn) *types.New
 			session.sendError(eventID, err)
 		}
 	}
+}
+
+func startResponsesWSClientKeepalive(client *websocket.Conn, pingInterval time.Duration) (func(), error) {
+	if pingInterval <= 0 {
+		return func() {}, nil
+	}
+	pongTimeout := pingInterval * responsesWSClientPongTimeoutMultiplier
+	if err := client.SetReadDeadline(time.Now().Add(pongTimeout)); err != nil {
+		return nil, err
+	}
+	client.SetPongHandler(func(string) error {
+		return client.SetReadDeadline(time.Now().Add(pongTimeout))
+	})
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				deadline := time.Now().Add(responsesWSControlWriteTimeout)
+				if err := client.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+					_ = client.Close()
+					return
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			close(stop)
+			<-done
+		})
+	}, nil
 }
 
 func responsesWSEventType(message []byte) (string, error) {

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNormalizeResponsesWSCreateEventWrapper(t *testing.T) {
@@ -342,6 +345,106 @@ func TestObserveUpstreamFailedReleasesCurrent(t *testing.T) {
 	}
 	if committed == nil || *committed {
 		t.Fatalf("commit success = %v, want false", committed)
+	}
+}
+
+func TestResponsesWSClientKeepaliveSendsPingAndAcceptsPong(t *testing.T) {
+	clientConn, serverConn, cleanup := newTestWebSocketPair(t)
+	defer cleanup()
+
+	pingReceived := make(chan struct{}, 8)
+	clientConn.SetPingHandler(func(data string) error {
+		select {
+		case pingReceived <- struct{}{}:
+		default:
+		}
+		return clientConn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(time.Second))
+	})
+	go func() {
+		for {
+			if _, _, err := clientConn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	stopKeepalive, err := startResponsesWSClientKeepalive(serverConn, 50*time.Millisecond)
+	require.NoError(t, err)
+	defer stopKeepalive()
+
+	type readResult struct {
+		messageType int
+		message     []byte
+		err         error
+	}
+	readResultCh := make(chan readResult, 1)
+	go func() {
+		messageType, message, err := serverConn.ReadMessage()
+		readResultCh <- readResult{messageType: messageType, message: message, err: err}
+	}()
+
+	for range 4 {
+		select {
+		case <-pingReceived:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for websocket ping")
+		}
+	}
+	require.NoError(t, clientConn.WriteMessage(websocket.TextMessage, []byte("still-alive")))
+
+	select {
+	case result := <-readResultCh:
+		require.NoError(t, result.err)
+		assert.Equal(t, websocket.TextMessage, result.messageType)
+		assert.Equal(t, []byte("still-alive"), result.message)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for message after pong refresh")
+	}
+}
+
+func TestResponsesWSClientKeepaliveTimesOutWithoutPong(t *testing.T) {
+	clientConn, serverConn, cleanup := newTestWebSocketPair(t)
+	defer cleanup()
+
+	pingReceived := make(chan struct{}, 1)
+	clientConn.SetPingHandler(func(string) error {
+		select {
+		case pingReceived <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	go func() {
+		for {
+			if _, _, err := clientConn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	stopKeepalive, err := startResponsesWSClientKeepalive(serverConn, 50*time.Millisecond)
+	require.NoError(t, err)
+	defer stopKeepalive()
+
+	readErrCh := make(chan error, 1)
+	go func() {
+		_, _, err := serverConn.ReadMessage()
+		readErrCh <- err
+	}()
+
+	select {
+	case <-pingReceived:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for websocket ping")
+	}
+	select {
+	case err := <-readErrCh:
+		require.Error(t, err)
+		var netErr net.Error
+		require.ErrorAs(t, err, &netErr)
+		assert.True(t, netErr.Timeout())
+	case <-time.After(time.Second):
+		t.Fatal("connection without pong did not reach its read deadline")
 	}
 }
 

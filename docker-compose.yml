@@ -38,6 +38,7 @@ services:
       - NODE_NAME=new-api-node-1  # 节点名称，用于审计日志中标识节点身份；多节点/容器部署时建议设置 (Node name used in audit logs; recommended when running multiple instances or in containers)
 #      - STREAMING_TIMEOUT=300  # 流模式无响应超时时间，单位秒，默认120秒，如果出现空补全可以尝试改为更大值 （Streaming timeout in seconds, default is 120s. Increase if experiencing empty completions）
 #      - RELAY_IDLE_CONN_TIMEOUT=90  # Relay HTTP 客户端空闲连接超时时间，单位秒，默认跟随 Go 标准库，设置为0表示不限制 (Relay HTTP client idle keep-alive timeout in seconds, defaults to Go standard library; set 0 to disable)
+#      - RESPONSES_WS_PING_INTERVAL_SECONDS=30  # Responses WS 客户端保活间隔，最大3600；空闲 Pong 超时为三倍间隔，0或负数关闭 (client keepalive interval, max 3600; idle pong timeout is 3x, <=0 disables)
 #      - SESSION_SECRET=random_string  # 多机部署时设置，必须修改这个随机字符串！！ （multi-node deployment, set this to a random string!!!!!!!）
 #      - SESSION_COOKIE_SECURE=true  # true：启用 Secure Refresh Cookie 和严格 refresh/logout OriginGuard；false/未配置：关闭 OriginGuard，仅用于本地 HTTP (true: Secure cookie + strict refresh/logout OriginGuard; false/unset: guard disabled for local HTTP only)
 #      - SESSION_COOKIE_TRUSTED_URL=https://example.com,https://admin.example.com  # Secure=true 时必填的精确 HTTPS Origin；不是 relay CORS 白名单，不支持通配符/路径 (Required exact HTTPS origins when Secure=true; not a relay CORS allowlist, no wildcard/path)
