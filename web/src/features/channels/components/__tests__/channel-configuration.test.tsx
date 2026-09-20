@@ -178,7 +178,7 @@ beforeEach(() => {
         },
       }
     }
-    if (url === '/api/group/') {
+    if (url === '/api/group') {
       return { data: { success: true, data: ['default', 'premium'] } }
     }
     if (url === '/api/prefill_group') {
@@ -797,7 +797,7 @@ test.each(['create', 'edit'])(
     } else {
       await waitFor(() =>
         expect(put).toHaveBeenCalledWith(
-          '/api/channel/',
+          '/api/channel',
           expect.objectContaining({
             type: 1,
             base_url: 'https://saved.example',
@@ -1306,7 +1306,7 @@ test('editing opens the shared configuration and omits an unchanged key on updat
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith(
-      '/api/channel/',
+      '/api/channel',
       expect.objectContaining({ id: 42, name: 'Renamed channel' }),
       expect.anything()
     )
@@ -1349,7 +1349,7 @@ test('editing legacy channels retains the full provider list and saves the origi
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith(
-      '/api/channel/',
+      '/api/channel',
       expect.objectContaining({
         id: 42,
         type: 55,
