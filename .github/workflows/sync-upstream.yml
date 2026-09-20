@@ -28,10 +28,14 @@ jobs:
     steps:
       - name: Merge upstream default branch
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           TARGET_BRANCH: ${{ matrix.branch }}
         run: |
           set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Set UPSTREAM_SYNC_TOKEN with repository Contents and Workflows write permissions."
+            exit 1
+          fi
           gh api \
             --method POST \
             --header "Accept: application/vnd.github+json" \
@@ -49,10 +53,14 @@ jobs:
     steps:
       - name: Merge upstream default branch
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           TARGET_BRANCH: feature/web-search
         run: |
           set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Set UPSTREAM_SYNC_TOKEN with repository Contents and Workflows write permissions."
+            exit 1
+          fi
           gh api \
             --method POST \
             --header "Accept: application/vnd.github+json" \
