@@ -1,6 +1,10 @@
 package relay
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -141,6 +145,55 @@ func TestParseOpenAIResponsesAlphaSearchStreamIncludesUsage(t *testing.T) {
 	assert.Equal(t, 8, result.Usage.PromptTokens)
 	assert.Equal(t, 4, result.Usage.CompletionTokens)
 	assert.Equal(t, 12, result.Usage.TotalTokens)
+}
+
+func TestWriteOpenAIResponsesAlphaSearchRejectsUnsuccessfulStream(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{"failed", `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"upstream failed"}}}`, "upstream failed"},
+		{"error", `{"type":"error","code":"server_error","message":"stream failed"}`, "stream failed"},
+		{"response error", `{"type":"response.error","message":"response failed"}`, "response failed"},
+		{"failed without details", `{"type":"response.failed"}`, "response.failed"},
+		{"incomplete", `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`, "response.incomplete"},
+		{"done with failed status", `{"type":"response.done","response":{"status":"failed"}}`, "did not complete successfully"},
+		{"completed with error", `{"type":"response.completed","response":{"error":{"message":"completion failed"}}}`, "completion failed"},
+		{"completed without response", `{"type":"response.completed"}`, "without a completed response"},
+		{"done marker only", "[DONE]", "without a completed response"},
+		{"truncated", `{"type":"response.output_text.delta","delta":"unfinished"}`, "without a completed response"},
+		{"empty", "", "without a completed response"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: " + tt.body + "\n\n")),
+			}
+			usage, apiErr := writeOpenAIResponsesAlphaSearchResult(c, nil, resp)
+			require.NotNil(t, apiErr)
+			assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+			assert.Contains(t, apiErr.Error(), tt.message)
+			assert.Nil(t, usage)
+			assert.False(t, c.Writer.Written(), "leave the response unwritten for error handling or retry")
+			assert.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
+func TestParseOpenAIResponsesAlphaSearchCompletedStreamWithoutDoneMarker(t *testing.T) {
+	for _, event := range []string{"response.completed", "response.done"} {
+		t.Run(event, func(t *testing.T) {
+			body := []byte("data: {\"type\":\"" + event + "\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n")
+			result, apiErr := parseOpenAIResponsesAlphaSearchOutput(body, "text/event-stream")
+			require.Nil(t, apiErr)
+			assert.Equal(t, "answer", result.Output)
+		})
+	}
 }
 
 func TestNormalizeOpenAIResponsesAlphaSearchUsageFallback(t *testing.T) {

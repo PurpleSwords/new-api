@@ -324,6 +324,7 @@ func parseOpenAIResponsesAlphaSearchOutput(responseBody []byte, contentType stri
 func parseOpenAIResponsesAlphaSearchStream(responseBody []byte) (openAIResponsesAlphaSearchResult, *types.NewAPIError) {
 	var output strings.Builder
 	var usage dto.Usage
+	completed := false
 	scanner := bufio.NewScanner(strings.NewReader(string(responseBody)))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -341,15 +342,35 @@ func parseOpenAIResponsesAlphaSearchStream(responseBody []byte) (openAIResponses
 			return openAIResponsesAlphaSearchResult{}, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		switch streamResponse.Type {
+		case "error", "response.error", "response.failed", "response.incomplete":
+			if streamResponse.Response != nil {
+				if oaiError := streamResponse.Response.GetOpenAIError(); oaiError != nil {
+					return openAIResponsesAlphaSearchResult{}, types.WithOpenAIError(*oaiError, http.StatusBadGateway)
+				}
+			}
+			message := streamResponse.Message
+			if message == "" {
+				message = "upstream alpha search returned " + streamResponse.Type
+			}
+			return openAIResponsesAlphaSearchResult{}, types.WithOpenAIError(types.OpenAIError{
+				Type: "upstream_error", Message: message, Code: streamResponse.Code, Param: streamResponse.Param,
+			}, http.StatusBadGateway)
 		case "response.output_text.delta":
 			output.WriteString(streamResponse.Delta)
 		case "response.completed", "response.done":
 			if streamResponse.Response == nil {
 				continue
 			}
-			if oaiError := streamResponse.Response.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+			if oaiError := streamResponse.Response.GetOpenAIError(); oaiError != nil {
 				return openAIResponsesAlphaSearchResult{}, types.WithOpenAIError(*oaiError, http.StatusBadGateway)
 			}
+			if len(streamResponse.Response.Status) > 0 {
+				var status string
+				if err := common.Unmarshal(streamResponse.Response.Status, &status); err != nil || status != "completed" {
+					return openAIResponsesAlphaSearchResult{}, types.NewOpenAIError(errors.New("upstream alpha search did not complete successfully"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+				}
+			}
+			completed = true
 			usage = openAIResponsesAlphaSearchUsage(streamResponse.Response.Usage)
 			if output.Len() == 0 {
 				output.WriteString(extractOpenAIResponsesAlphaSearchText(*streamResponse.Response))
@@ -358,6 +379,9 @@ func parseOpenAIResponsesAlphaSearchStream(responseBody []byte) (openAIResponses
 	}
 	if err := scanner.Err(); err != nil {
 		return openAIResponsesAlphaSearchResult{}, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if !completed {
+		return openAIResponsesAlphaSearchResult{}, types.NewOpenAIError(errors.New("upstream alpha search stream ended without a completed response"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	return openAIResponsesAlphaSearchResult{Output: output.String(), Usage: usage}, nil
 }
