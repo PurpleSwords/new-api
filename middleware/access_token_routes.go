@@ -234,29 +234,29 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 
 	// router/api-router.go: /api/audit, /api/log, /api/data
 	"GET /api/audit/self":                       accessTokenScopeRule("usage:read"),
-	"GET /api/log/":                             accessTokenScopeRule("log:read"),
+	"GET /api/log":                              accessTokenScopeRule("log:read"),
 	"GET /api/log/stat":                         accessTokenScopeRule("log:read"),
 	"GET /api/log/self/stat":                    accessTokenScopeRule("usage:read"),
 	"GET /api/log/channel_affinity_usage_cache": accessTokenScopeRule("log:read"),
 	"GET /api/log/search":                       accessTokenScopeRule("log:read"),
 	"GET /api/log/self":                         accessTokenScopeRule("usage:read"),
 	"GET /api/log/self/search":                  accessTokenScopeRule("usage:read"),
-	"GET /api/data/":                            accessTokenScopeRule("log:read"),
+	"GET /api/data":                             accessTokenScopeRule("log:read"),
 	"GET /api/data/users":                       accessTokenScopeRule("log:read"),
 	"GET /api/data/self":                        accessTokenScopeRule("usage:read"),
 	"GET /api/data/flow":                        accessTokenScopeRule("log:read"),
 	"GET /api/data/flow/self":                   accessTokenScopeRule("usage:read"),
 
 	// router/api-router.go: /api/group, /api/prefill_group
-	"GET /api/group/":               accessTokenScopeRule("group:read"),
-	"GET /api/prefill_group/":       accessTokenScopeRule("group:read"),
-	"POST /api/prefill_group/":      accessTokenScopeRule("group:write"),
-	"PUT /api/prefill_group/":       accessTokenScopeRule("group:write"),
+	"GET /api/group":                accessTokenScopeRule("group:read"),
+	"GET /api/prefill_group":        accessTokenScopeRule("group:read"),
+	"POST /api/prefill_group":       accessTokenScopeRule("group:write"),
+	"PUT /api/prefill_group":        accessTokenScopeRule("group:write"),
 	"DELETE /api/prefill_group/:id": accessTokenScopeRule("group:write"),
 
 	// router/api-router.go: /api/mj, /api/task
 	"GET /api/mj/self":                 accessTokenScopeRule("usage:read"),
-	"GET /api/mj/":                     accessTokenScopeRule("log:read"),
+	"GET /api/mj":                      accessTokenScopeRule("log:read"),
 	"GET /api/task/self":               accessTokenScopeRule("usage:read"),
 	"GET /api/task":                    accessTokenScopeRule("log:read"),
 	"GET /api/task/:task_id/artifacts": accessTokenScopeRule("usage:read"),
