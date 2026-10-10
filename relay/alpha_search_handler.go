@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/tokenkit"
 
 	"github.com/gin-gonic/gin"
 )
@@ -123,18 +124,7 @@ func AlphaSearchHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError
 	}
 
 	// Upstream alpha search returns no usage; bill one web_search_preview call.
-	if info.ResponsesUsageInfo == nil {
-		info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{
-			BuiltInTools: make(map[string]*relaycommon.BuildInToolInfo),
-		}
-	}
-	if info.ResponsesUsageInfo.BuiltInTools == nil {
-		info.ResponsesUsageInfo.BuiltInTools = make(map[string]*relaycommon.BuildInToolInfo)
-	}
-	info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview] = &relaycommon.BuildInToolInfo{
-		ToolName:  dto.BuildInToolWebSearchPreview,
-		CallCount: 1,
-	}
+	info.SetBillableToolCount(dto.BuildInToolWebSearchPreview, 1)
 
 	usage := &dto.Usage{}
 	service.PostTextConsumeQuota(c, info, usage, nil)
@@ -420,7 +410,7 @@ func normalizeOpenAIResponsesAlphaSearchUsage(info *relaycommon.RelayInfo, resul
 		if info != nil {
 			modelName = info.UpstreamModelName
 		}
-		result.Usage.CompletionTokens = service.CountTextToken(result.Output, modelName)
+		result.Usage.CompletionTokens = tokenkit.Count(modelName, result.Output)
 	}
 	if info != nil && result.Usage.PromptTokens == 0 && result.Usage.CompletionTokens != 0 {
 		result.Usage.PromptTokens = info.GetEstimatePromptTokens()

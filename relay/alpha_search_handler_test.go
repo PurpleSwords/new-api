@@ -11,7 +11,6 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -197,7 +196,6 @@ func TestParseOpenAIResponsesAlphaSearchCompletedStreamWithoutDoneMarker(t *test
 }
 
 func TestNormalizeOpenAIResponsesAlphaSearchUsageFallback(t *testing.T) {
-	service.InitTokenEncoders()
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.4"}}
 	info.SetEstimatePromptTokens(13)
 	result := openAIResponsesAlphaSearchResult{Output: "answer"}
