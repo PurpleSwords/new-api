@@ -1,0 +1,80 @@
+name: Sync upstream and publish custom image daily
+
+on:
+  schedule:
+    # 10:17 Asia/Shanghai; avoid the start-of-hour Actions queue peak.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+          - main
+          - develop
+
+    steps:
+      - name: Merge upstream default branch
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          TARGET_BRANCH: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Set UPSTREAM_SYNC_TOKEN with repository Contents and Workflows write permissions."
+            exit 1
+          fi
+          gh api \
+            --method POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            --field "branch=${TARGET_BRANCH}"
+
+  sync_custom_branch:
+    name: Sync feature/web-search
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Merge upstream default branch
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          TARGET_BRANCH: feature/web-search
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Set UPSTREAM_SYNC_TOKEN with repository Contents and Workflows write permissions."
+            exit 1
+          fi
+          gh api \
+            --method POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            --field "branch=${TARGET_BRANCH}"
+
+  publish_custom_image:
+    name: Publish feature/web-search image
+    needs: [sync_custom_branch]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker-image-branch.yml
+    with:
+      branch: feature/web-search

@@ -1,15 +1,28 @@
-name: Publish Docker image (manual branch)
+name: Publish Docker image (branch)
+
+env:
+  IMAGE_NAME: ghcr.io/purpleswords/new-api
 
 env:
   IMAGE_NAME: ghcr.io/purpleswords/new-api
 
 on:
+  workflow_call:
+    inputs:
+      branch:
+        description: "Branch name to build"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       branch:
         description: "Branch name to build (e.g. alpha, nightly)"
         required: true
         type: string
+
+concurrency:
+  group: publish-docker-${{ inputs.branch }}
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -194,7 +207,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
   create_manifests:
-    name: Create multi-arch manifests (Docker Hub)
+    name: Create multi-arch manifests (GHCR)
     needs: [prepare, build_single_arch]
     runs-on: ubuntu-latest
     permissions:
