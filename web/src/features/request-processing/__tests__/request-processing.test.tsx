@@ -153,7 +153,7 @@ beforeEach(() => {
     if (url === '/api/task_plugin_options') {
       return { data: { success: true, data: [filterPlugin, taskPlugin] } }
     }
-    if (url === '/api/group/') {
+    if (url === '/api/group') {
       return { data: { success: true, data: ['default', 'vip', 'svip'] } }
     }
     if (url === '/api/channel/models_enabled') {

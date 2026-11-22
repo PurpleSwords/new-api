@@ -46,7 +46,7 @@ function renderDrawer(currentRow?: User) {
     if (url === '/api/authz/catalog') {
       return { data: { success: true, data: { resources: [], roles: [] } } }
     }
-    if (url === '/api/group/') {
+    if (url === '/api/group') {
       return { data: { success: true, data: ['default'] } }
     }
     return { data: { success: true, data: target } }
