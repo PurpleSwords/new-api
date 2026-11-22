@@ -3,9 +3,6 @@ name: Publish Docker image (branch)
 env:
   IMAGE_NAME: ghcr.io/purpleswords/new-api
 
-env:
-  IMAGE_NAME: ghcr.io/purpleswords/new-api
-
 on:
   workflow_call:
     inputs:
